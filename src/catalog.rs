@@ -16,11 +16,37 @@ pub struct App {
     /// subdominios; con "!" delante, una excepción.
     #[serde(default)]
     pub domains: Vec<String>,
-    /// Vistas (resource-id) que solo aparecen en su video vertical: con la
-    /// app en "sin vertical", el celular te saca en cuanto se ve una. Se
-    /// sacan con `cerrojo vistas` en esa pantalla. Vacío: no hay ese modo.
+    /// Si se puede dejar la app y quitarle solo los videos cortos.
     #[serde(default)]
-    pub vertical: Vec<String>,
+    pub partial: Option<Partial>,
+}
+
+/// El modo «solo los Shorts»: la app se deja usar y el vigía del celular
+/// (android/…/Vigia.java) cierra el reproductor de videos cortos y tapa su
+/// pestaña. Sus páginas web no se bloquean: la app las necesita.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Partial {
+    /// Lo que se quita, para los textos: "Shorts", "Reels".
+    pub what: String,
+    /// El nombre que entiende el vigía.
+    pub key: String,
+    /// Los paquetes que se dejan usar; los demás de la app (Lite…) se bloquean.
+    pub packages: Vec<String>,
+    /// Algo más que puede quitar el vigía en este modo (los directos de YouTube).
+    #[serde(default)]
+    pub extra: Option<Extra>,
+    /// Solo existe este modo: la app nunca se bloquea entera (WhatsApp, LinkedIn).
+    #[serde(default)]
+    pub only: bool,
+}
+
+/// Una opción del modo «solo los Shorts», con su interruptor en la ventana.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Extra {
+    /// Lo que entiende el vigía ("youtube-directos").
+    pub key: String,
+    /// El texto de la casilla.
+    pub label: String,
 }
 
 fn app(name: &str, hint: &str, packages: &[&str]) -> App {
@@ -29,7 +55,7 @@ fn app(name: &str, hint: &str, packages: &[&str]) -> App {
         hint: hint.into(),
         packages: packages.iter().map(|p| p.to_string()).collect(),
         domains: Vec::new(),
-        vertical: Vec::new(),
+        partial: None,
     }
 }
 
@@ -39,14 +65,46 @@ impl App {
         self
     }
 
-    fn vertical(mut self, ids: &[&str]) -> App {
-        self.vertical = ids.iter().map(|d| d.to_string()).collect();
+    fn partial(mut self, what: &str, key: &str, packages: &[&str]) -> App {
+        self.partial = Some(Partial {
+            what: what.into(),
+            key: key.into(),
+            packages: packages.iter().map(|p| p.to_string()).collect(),
+            extra: None,
+            only: false,
+        });
         self
     }
 
-    /// Si se puede dejar la app quitándole solo el video vertical.
+    /// Sin «Toda la app»: solo se le quitan los videos o historias.
+    fn only_partial(mut self) -> App {
+        if let Some(p) = self.partial.as_mut() {
+            p.only = true;
+        }
+        self
+    }
+
+    /// Si se puede dejar la app quitándole solo los videos cortos (modo
+    /// «sin vertical», lo hace el vigía).
     pub fn has_vertical(&self) -> bool {
-        !self.vertical.is_empty()
+        self.partial.is_some()
+    }
+
+    /// Lo que quita el modo «sin vertical», para los textos ("Shorts").
+    pub fn vertical_what(&self) -> &str {
+        self.partial.as_ref().map_or(self.hint.as_str(), |p| p.what.as_str())
+    }
+
+    /// Las que nunca se bloquean enteras (WhatsApp, LinkedIn).
+    pub fn never_blocked(&self) -> bool {
+        self.partial.as_ref().is_some_and(|p| p.only)
+    }
+
+    fn extra(mut self, key: &str, label: &str) -> App {
+        if let Some(p) = self.partial.as_mut() {
+            p.extra = Some(Extra { key: key.into(), label: label.into() });
+        }
+        self
     }
 }
 
@@ -60,8 +118,9 @@ pub const BYPASS: &[&str] = &[
 
 pub fn builtin() -> Vec<App> {
     vec![
-        // Vistas sacadas del A36 con YouTube 21.45 (Shorts abierto).
-        app("YouTube", "Shorts", &["com.google.android.youtube"]).vertical(&["reel_watch_player", "reel_recycler"]),
+        app("YouTube", "Shorts", &["com.google.android.youtube"]).partial("Shorts", "youtube", &["com.google.android.youtube"])
+            // Con «No me interesa» en cada directo del feed.
+            .extra("youtube-directos", "Quitar también los directos"),
         app("YouTube Music", "Samples", &["com.google.android.apps.youtube.music"]),
         app(
             "YouTube parcheado",
@@ -79,7 +138,8 @@ pub fn builtin() -> Vec<App> {
         app("TikTok", "Para ti", &["com.zhiliaoapp.musically", "com.zhiliaoapp.musically.go", "com.ss.android.ugc.trill"])
             .web(&["tiktok.com", "tiktokv.com", "tiktokcdn.com", "tiktokcdn-us.com", "tiktokw.us", "musical.ly"]),
         app("Instagram", "Reels", &["com.instagram.android", "com.instagram.lite"])
-            .web(&["instagram.com", "cdninstagram.com", "instagr.am", "ig.me"]),
+            .web(&["instagram.com", "cdninstagram.com", "instagr.am", "ig.me"])
+            .partial("Reels", "instagram", &["com.instagram.android"]),
         app("Threads", "Videos en el feed", &["com.instagram.barcelona"]).web(&["threads.net", "threads.com"]),
         // graph.facebook.com se deja: lo usan WhatsApp Business y los
         // inicios de sesión con Facebook de otras apps.
@@ -93,6 +153,13 @@ pub fn builtin() -> Vec<App> {
         app("Kwai", "Videos cortos", &["com.kwai.video"]).web(&["kwai.com", "kwai.net", "kwaicdn.com", "kwai-pro.com"]),
         app("Likee", "Videos cortos", &["video.like"]).web(&["likee.video", "like.video", "likeevideo.com"]),
         app("Snaptube", "Cliente de YouTube", &["com.snaptube.premium"]).web(&["snaptube.app", "snaptubeapp.com"]),
+        // Estas se dejan siempre: solo se les quitan las historias y los videos.
+        app("WhatsApp", "Estados · los chats siguen igual", &["com.whatsapp", "com.whatsapp.w4b"])
+            .partial("Estados", "whatsapp", &["com.whatsapp", "com.whatsapp.w4b"])
+            .only_partial(),
+        app("LinkedIn", "Feed y Videos · mensajes, empleos y lo demás siguen igual", &["com.linkedin.android"])
+            .partial("feed", "linkedin", &["com.linkedin.android"])
+            .only_partial(),
     ]
 }
 
@@ -113,21 +180,9 @@ pub fn config_dir() -> PathBuf {
 }
 
 /// Las del catálogo más las que añadiste tú (~/.config/cerrojo/extra.json).
-/// En ~/.config/cerrojo/vertical.json ({"Instagram": ["clips_viewer_view_pager"]})
-/// se pueden poner o corregir las vistas de video vertical sin esperar a una
-/// versión nueva de Cerrojo.
 pub fn all() -> Vec<App> {
     let mut apps = builtin();
     apps.extend(load_extra());
-    let extra_vertical: std::collections::HashMap<String, Vec<String>> = std::fs::read(config_dir().join("vertical.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
-    for a in &mut apps {
-        if let Some(v) = extra_vertical.get(&a.name) {
-            a.vertical = v.clone();
-        }
-    }
     apps
 }
 

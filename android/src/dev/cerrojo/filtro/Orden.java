@@ -8,7 +8,7 @@ import android.os.Bundle;
  * Órdenes del PC (adb shell am start -n dev.cerrojo.filtro/.Orden ...):
  *   --es dominios "a.com b.com"      guarda la lista y enciende el filtro web
  *   --ez apagar true                 apaga el filtro web
- *   --es vertical "pkg:id1,id2;…"    vistas de video vertical de las que sacarte
+ *   --es vigia "youtube instagram"   qué apps vigila el vigía ("" = ninguna)
  *   --es bloquear "pkg1 pkg2"        apps que la protección máxima mantiene suspendidas
  *   --es abrir "pkg1 pkg2" --ei minutos N   desbloqueo temporal
  *   --ez cerrar true                 acaba ya los desbloqueos temporales
@@ -28,9 +28,8 @@ public class Orden extends Activity {
             Filtro.encender(this);
         }
         boolean guardia = false;
-        if (in.hasExtra("vertical")) {
-            Guardia.prefs(this).edit().putString("vertical", in.getStringExtra("vertical")).commit();
-            Vertical.recargar();
+        if (in.hasExtra("vigia")) {
+            Vigia.guardar(this, in.getStringExtra("vigia"));
             guardia = true;
         }
         if (in.hasExtra("bloquear")) {

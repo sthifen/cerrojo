@@ -57,9 +57,10 @@ The one way around it from the phone is to tap *Uninstall* on the app's Play Sto
 app. That takes several deliberate steps, and Cerrojo restores the lock the next time you connect. Websites are
 blocked by a small DNS-only local VPN that Cerrojo installs over adb.
 
-Each app can also be set to **no vertical video**: the app stays usable, but an accessibility service backs out
-as soon as its short-form player shows up. It ships with YouTube Shorts; for other apps, run `cerrojo vistas`
-on that screen and add the view ids to `~/.config/cerrojo/vertical.json`. **Open for a while** (`cerrojo abrir
+Each app can also be set to **no vertical video**: the app stays usable, but an accessibility service (the
+*watcher*) backs out as soon as its short-form player shows up and covers its tab in the bottom bar. It covers
+YouTube Shorts (optionally live streams too), Instagram Reels, WhatsApp Status and the LinkedIn feed; WhatsApp and
+LinkedIn are never blocked outright. **Open for a while** (`cerrojo abrir
 youtube 20`) relocks by itself even with the cable unplugged. **Maximum protection** makes the companion app the
 *device owner*. It then blocks uninstalling the placeholders and itself, as well as VPN changes and safe mode, and
 it suspends any blocked app the moment it is installed. Android only allows this on a phone with no accounts, so

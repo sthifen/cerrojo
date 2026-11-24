@@ -37,8 +37,14 @@ la Play Store, ni desde otra tienda, ni con un APK descargado. La llave se queda
 - 🌐 **También sus páginas web.** Al bloquear Instagram, TikTok, Facebook, Threads… sus sitios dejan de abrir en
   cualquier navegador del celular. WhatsApp, LinkedIn y YouTube web siguen funcionando. Se apaga y se enciende con
   su propio interruptor, *Páginas web*.
-- ✂️ **O solo sin su video vertical.** YouTube se puede dejar instalada y usable, pero **sin Shorts**: en cuanto
-  entras a un Short, el celular te saca. Cada app elige: *bloqueada*, *sin vertical* o *libre*.
+- ✂️ **O solo sin su video vertical.** YouTube, Instagram, WhatsApp y LinkedIn se pueden dejar usables, pero sin
+  lo que engancha. Cada app elige: *bloqueada*, *sin vertical* o *libre*. En YouTube e Instagram el reproductor de
+  Shorts/Reels se cierra en cuanto aparece y su pestaña de abajo queda tapada con un 🧠. Los bloques de Shorts del
+  feed se quitan con «No me interesa», y con la casilla *Quitar también los directos*, los directos también.
+- 💬 **Sin Estados de WhatsApp ni feed de LinkedIn.** Estas dos nunca se bloquean enteras. En WhatsApp los chats
+  siguen igual, pero un Estado queda tapado y se cierra en cuanto se abre, y la pestaña *Novedades* queda tapada. En
+  LinkedIn el feed de *Inicio* y la pestaña *Video* quedan tapados; buscador, mensajes, red, notificaciones y
+  empleos siguen abiertos.
 - ⏱️ **Abrir un rato.** «Abrir… 20 min» desde el PC: pasado el tiempo se vuelve a cerrar sola, aunque desconectes
   el cable.
 - 🛡️ **Protección máxima (opcional).** El celular se cuida solo, sin el PC: no deja desinstalar los candados ni
@@ -135,12 +141,13 @@ VPN local que **solo ve el DNS**. Cuando el navegador pregunta por `instagram.co
 de preguntas las reenvía al DNS de tu red, y el tráfico normal no pasa por ella. adb le da el permiso de VPN
 (`appops`) sin el diálogo de confirmación y la deja como VPN siempre activa, así que vuelve sola al reiniciar.
 
-**Sin vertical** es un servicio de accesibilidad de esa misma mini app. Solo mira las apps que elegiste y,
-si en la pantalla aparece una vista que solo existe en su video vertical (en YouTube, `reel_watch_player`), pulsa
-*Atrás*. Si el video sigue ahí (entraste por un enlace), pulsa *Inicio*. Lo enciende adb (`settings put secure`) y
-la app tiene permiso para volver a encenderlo si lo apagas en Ajustes. Además queda como *administrador del
-dispositivo*, así que no se puede forzar su detención ni desinstalarla sin quitar eso primero. Qué vistas buscar en
-cada app viene del catálogo del PC: para añadir otra app, abre su video vertical y corre `cerrojo vistas`.
+**Sin vertical** lo hace el *vigía*, un servicio de accesibilidad de esa misma mini app. Solo mira la pantalla de
+las apps que elegiste: si se abre el reproductor de Shorts o de Reels, pulsa *Atrás*; si ve su pestaña en la barra
+de abajo, le pone encima un recuadro con un 🧠 que no se deja tocar. adb lo enciende escribiendo
+`enabled_accessibility_services`, sin pasar por Ajustes, y la app tiene permiso para volver a encenderlo si lo
+apagas en *Ajustes › Accesibilidad*. Además queda como *administrador del dispositivo*, así que no se puede forzar
+su detención ni desinstalarla sin quitar eso primero. En este modo las páginas web de la app no se bloquean,
+porque la app las necesita.
 
 **Protección máxima** hace a esa mini app *propietaria del equipo* (Device Owner), lo mismo que usan las empresas
 con los celulares de trabajo:
@@ -168,15 +175,18 @@ corta el impulso, y **Cerrojo vuelve a poner el candado la próxima vez que cone
 *protección máxima* ese camino se cierra: la tienda no puede desinstalar el candado. Siempre queda el
 restablecimiento de fábrica; Cerrojo busca que saltárselo sea incómodo, no imposible.
 
-**¿El «sin vertical» funciona con Instagram, Facebook…?** Por ahora solo trae las vistas de YouTube. Para otra app:
-déjala instalada, abre su video vertical en el celular, corre `cerrojo vistas` y pon los nombres en
-`~/.config/cerrojo/vertical.json` (por ejemplo, `{"Instagram": ["clips_viewer_view_pager"]}`). Desde ese momento
-la app ofrece el modo. Si una actualización de la app cambia esas vistas, se arregla igual.
+**¿El «sin vertical» funciona con Instagram, Facebook…?** Trae YouTube, Instagram, WhatsApp y LinkedIn. Facebook
+aún no: se bloquea entera.
 
 **¿Y desde el navegador?** También: el filtro web bloquea los sitios de las apps que tengas bloqueadas (y los DNS
 cifrados que servirían para saltárselo). Se puede quitar desde *Ajustes › VPN* o desinstalándolo, pero Cerrojo lo
 vuelve a poner al conectar el celular. YouTube web se deja a propósito; los Shorts dentro de youtube.com no se
 pueden separar por DNS.
+
+**¿El modo «sin vertical» es igual de fuerte?** No. Se puede apagar en *Ajustes › Accesibilidad* (el guardián lo
+vuelve a encender, y si no, Cerrojo al conectar el celular), y si YouTube o Instagram cambian su diseño por dentro puede dejar de reconocer los
+Shorts hasta que se actualice Cerrojo. Algunos celulares avisan de vez en cuando de que un servicio "puede ver
+la pantalla": es el vigía, que no guarda ni envía nada. Si los Shorts te pueden, usa *Toda la app*.
 
 **¿Hace más lento el internet?** Solo pasa por el filtro la pregunta de "¿qué IP tiene este sitio?", no las
 descargas ni los videos. En Samsung, la primera vez que se instala puede salir Play Protect: toca *Instalar de
@@ -196,11 +206,13 @@ cerrojo desbloquear com.pinterest
 cerrojo web                         # pone o quita el filtro web según lo bloqueado
 cerrojo web apagar                  # lo desactiva en este equipo (encender lo vuelve a poner)
 cerrojo modo youtube vertical       # YouTube sí, Shorts no (bloqueada | vertical | libre)
+cerrojo modo whatsapp vertical      # WhatsApp sin Estados (linkedin: sin feed)
+cerrojo solo instagram si           # lo mismo que «modo instagram vertical» (no: bloqueada)
 cerrojo abrir youtube 20            # 20 minutos y se vuelve a cerrar sola
 cerrojo cerrar                      # acaba ya los desbloqueos temporales
 cerrojo dueño                       # protección máxima (cerrojo dueño quitar la quita)
 cerrojo guardia                     # estado de lo anterior
-cerrojo vistas                      # vistas de la pantalla de ahora, para el «sin vertical»
+cerrojo vistas                      # vistas de la pantalla de ahora (para depurar el vigía)
 cerrojo bloquear PAQUETE -s SERIAL  # con varios equipos conectados
 ```
 
@@ -212,8 +224,8 @@ cargo build --release
 ./target/release/cerrojo
 ```
 
-Rust estable y GTK 4.6 o más nuevo. El filtro web ya va compilado en `assets/filtro/`; solo si cambias su Java
-hace falta el SDK de Android (`android/build.sh`). Las versiones se publican solas con GitHub Actions al subir una etiqueta `vX.Y.Z`.
+Rust estable y GTK 4.6 o más nuevo. El ayudante del celular (filtro web y vigía) va compilado en `assets/filtro/`;
+solo si cambias su Java o sus recursos hace falta el SDK de Android (`android/build.sh`). Las versiones se publican solas con GitHub Actions al subir una etiqueta `vX.Y.Z`.
 
 ## Licencia
 

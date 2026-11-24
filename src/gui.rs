@@ -85,6 +85,10 @@ button.primary:disabled { background-color: rgba(255,255,255,0.12); color: rgba(
 button.ghost { background-color: transparent; color: #E6E8EE; border: 1px solid rgba(255,255,255,0.22); }
 button.ghost:hover { background-color: rgba(255,255,255,0.08); }
 button.ghost.small { min-height: 34px; padding: 0 14px; border-radius: 12px; }
+checkbutton.extra { margin-top: 3px; font-size: 11.5px; color: rgba(230,232,238,0.75); }
+checkbutton.extra check { min-width: 14px; min-height: 14px; border-radius: 4px; background-image: none;
+  background-color: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.22); box-shadow: none; }
+checkbutton.extra check:checked { background-color: #00C3E3; border-color: #00C3E3; color: #0B2A33; }
 button.vtoggle:checked { background-color: rgba(0,195,227,0.22); border-color: rgba(0,195,227,0.7); color: #9DEBF7; }
 menubutton.ghost > button { min-height: 34px; padding: 0 12px; border-radius: 12px; background-image: none; box-shadow: none;
   background-color: transparent; color: #E6E8EE; border: 1px solid rgba(255,255,255,0.22); font-weight: 600; }
@@ -217,7 +221,7 @@ fn worker(jobs: mpsc::Receiver<Job>, tx: mpsc::Sender<Msg>) {
                 } else {
                     match mode {
                         Mode::Blocked => String::new(),
-                        Mode::NoVertical => format!("{}: se puede usar, pero sin {}", app.name, app.hint),
+                        Mode::NoVertical => format!("{}: se puede usar, pero sin {}", app.name, app.vertical_what()),
                         Mode::Free => format!("{} desbloqueada: ya se puede instalar", app.name),
                     }
                 };
@@ -313,6 +317,8 @@ struct Row {
     switch: gtk::Switch,
     /// «Sin Shorts», «Sin Reels»…: solo en las apps que lo tienen.
     vertical: Option<gtk::ToggleButton>,
+    /// La opción extra del «sin vertical» («Quitar también los directos»).
+    extra: Option<gtk::CheckButton>,
     open: gtk::MenuButton,
 }
 
@@ -581,8 +587,10 @@ fn build(app: &gtk::Application) {
             let mut s = state.borrow_mut();
             let Some(serial) = s.current.clone() else { return };
             let st = s.states.get(&serial).cloned().unwrap_or_default();
-            let apps: Vec<App> = catalog::all().into_iter().filter(|a| app_state(a, &st) != AppState::Blocked).collect();
-            for a in catalog::all() {
+            // WhatsApp y LinkedIn se quedan como estén: nunca se bloquean enteras.
+            let apps: Vec<App> =
+                catalog::all().into_iter().filter(|a| !a.never_blocked() && app_state(a, &st) != AppState::Blocked).collect();
+            for a in catalog::all().into_iter().filter(|a| !a.never_blocked()) {
                 s.store.set(&serial, &a.name, true);
             }
             s.store.set_web(&serial, true);
@@ -840,7 +848,10 @@ fn on_msg(s: &mut State, msg: Msg) {
                 // Lo que ya está bloqueado (por ejemplo, a mano antes de tener
                 // Cerrojo) pasa a ser "lo que quieres".
                 for a in &apps {
-                    if app_state(a, &st) == AppState::Blocked && !s.store.wants(&serial, &a.name) {
+                    if app_state(a, &st) == AppState::Blocked
+                        && !a.never_blocked()
+                        && s.store.mode(&serial, &a.name) == Mode::Free
+                    {
                         s.store.set(&serial, &a.name, true);
                     }
                 }
@@ -947,6 +958,24 @@ fn rebuild_rows(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
         hint.add_css_class("row-hint");
         hint.set_xalign(0.0);
         text.append(&hint);
+        let extra = app.partial.as_ref().and_then(|pp| pp.extra.clone()).map(|ex| {
+            let check = gtk::CheckButton::with_label(&ex.label);
+            check.add_css_class("extra");
+            check.set_halign(gtk::Align::Start);
+            let state = state.clone();
+            check.connect_toggled(move |c| {
+                if c.widget_name() == "sync" {
+                    return;
+                }
+                let mut s = state.borrow_mut();
+                let Some(serial) = s.current.clone() else { return };
+                s.store.set_extra(&serial, &ex.key, c.is_active());
+                // Solo cambia lo que mira el vigía: basta con ajustar el ayudante.
+                let _ = s.jobs.send(Job::Web(serial));
+            });
+            text.append(&check);
+            check
+        });
         row.append(&text);
         let chip = gtk::Label::new(None);
         chip.add_css_class("chip");
@@ -977,7 +1006,7 @@ fn rebuild_rows(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
         }
         row.append(&open);
         let vertical = app.has_vertical().then(|| {
-            let t = gtk::ToggleButton::with_label(&format!("Sin {}", app.hint));
+            let t = gtk::ToggleButton::with_label(&format!("Sin {}", app.vertical_what()));
             t.add_css_class("ghost");
             t.add_css_class("small");
             t.add_css_class("vtoggle");
@@ -999,7 +1028,7 @@ fn rebuild_rows(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
                     t.set_active(true);
                     t.set_widget_name("");
                     s.pending_free = Some(app.clone());
-                    ui.confirm_text.set_text(&format!("¿Volver a ver {} en {}?", app.hint, app.name));
+                    ui.confirm_text.set_text(&format!("¿Volver a ver {} en {}?", app.vertical_what(), app.name));
                     ui.confirm_why.set_text(VERTICAL_WHY);
                     ui.confirm_go.set_label("Quitar el filtro");
                     ui.confirm.set_visible(true);
@@ -1035,7 +1064,9 @@ fn rebuild_rows(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
         }
         row.append(&switch);
         ui.list.append(&row);
-        rows.push(Row { app, chip, switch, vertical, open });
+        // WhatsApp y LinkedIn no se bloquean enteras: solo «Sin Estados»/«Sin feed».
+        switch.set_visible(!app.never_blocked());
+        rows.push(Row { app, chip, switch, vertical, extra, open });
     }
     state.borrow_mut().rows = rows;
 }
@@ -1139,7 +1170,7 @@ fn render(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
                 (label.as_str(), "live", mode == Mode::Blocked)
             }
             Some(AppState::Live | AppState::Free) if vertical_on => {
-                label = format!("Sin {}", row.app.hint);
+                label = format!("Sin {}", row.app.vertical_what());
                 (label.as_str(), "blocked", false)
             }
             Some(AppState::Blocked) => ("Bloqueada", "blocked", true),
@@ -1162,6 +1193,16 @@ fn render(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
             }
             t.set_visible(mode != Mode::Blocked);
             t.set_sensitive(busy.is_none() && st.is_some());
+        }
+        if let (Some(check), Some(ex)) = (&row.extra, row.app.partial.as_ref().and_then(|pp| pp.extra.as_ref())) {
+            check.set_visible(mode == Mode::NoVertical);
+            let want = s.store.extra_on(&device.serial, &ex.key);
+            if check.is_active() != want {
+                check.set_widget_name("sync");
+                check.set_active(want);
+                check.set_widget_name("");
+            }
+            check.set_sensitive(busy.is_none() && st.is_some());
         }
         // Con «Sin Shorts» encendido el botón ya dice el estado.
         row.chip.set_visible(!(vertical_on && open_left.is_none() && row.vertical.is_some()));

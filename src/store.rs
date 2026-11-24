@@ -13,6 +13,9 @@ pub struct Store {
     pub web_off: BTreeSet<String>,
     /// Apps que quieres sin su video vertical (~/.config/cerrojo/sin-vertical.json).
     pub no_vertical: BTreeMap<String, BTreeSet<String>>,
+    /// Las opciones extra que apagaste en cada equipo (encendidas si no están
+    /// aquí; ~/.config/cerrojo/opciones.json).
+    pub extras_off: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// Cómo quieres una app en un equipo.
@@ -48,7 +51,40 @@ impl Store {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        Store { wanted, web_off, no_vertical }
+        let extras_off = std::fs::read(config_dir().join("opciones.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let mut st = Store { wanted, web_off, no_vertical, extras_off };
+        st.migrate();
+        st
+    }
+
+    /// La versión del fork guardaba «solo los Shorts» como bloqueada + una
+    /// marca en parcial.json, y WhatsApp/LinkedIn como bloqueadas a secas:
+    /// pasan a «sin vertical».
+    fn migrate(&mut self) {
+        let path = config_dir().join("parcial.json");
+        let old: BTreeMap<String, BTreeSet<String>> =
+            std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let only: Vec<String> = crate::catalog::all().into_iter().filter(|a| a.never_blocked()).map(|a| a.name).collect();
+        let mut changed = false;
+        for (serial, set) in self.wanted.iter_mut() {
+            let moved: Vec<String> = set
+                .iter()
+                .filter(|a| only.contains(a) || old.get(serial).is_some_and(|o| o.contains(*a)))
+                .cloned()
+                .collect();
+            for a in moved {
+                set.remove(&a);
+                self.no_vertical.entry(serial.clone()).or_default().insert(a);
+                changed = true;
+            }
+        }
+        if changed || path.exists() {
+            self.save();
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     pub fn save(&self) {
@@ -62,6 +98,24 @@ impl Store {
         if let Ok(b) = serde_json::to_vec_pretty(&self.no_vertical) {
             let _ = std::fs::write(config_dir().join("sin-vertical.json"), b);
         }
+        if let Ok(b) = serde_json::to_vec_pretty(&self.extras_off) {
+            let _ = std::fs::write(config_dir().join("opciones.json"), b);
+        }
+    }
+
+    /// Encender o apagar una opción extra (los directos) en este equipo.
+    pub fn set_extra(&mut self, serial: &str, key: &str, on: bool) {
+        let set = self.extras_off.entry(serial.to_string()).or_default();
+        if on {
+            set.remove(key);
+        } else {
+            set.insert(key.to_string());
+        }
+        self.save();
+    }
+
+    pub fn extra_on(&self, serial: &str, key: &str) -> bool {
+        !self.extras_off.get(serial).is_some_and(|s| s.contains(key))
     }
 
     pub fn mode(&self, serial: &str, app: &str) -> Mode {
@@ -84,26 +138,25 @@ impl Store {
         self.set(serial, app, mode == Mode::Blocked);
     }
 
-    /// Para el celular: "pkg:id1,id2;pkg2:…" de las apps en "sin vertical".
-    pub fn vertical_rules(&self, serial: &str) -> String {
+    /// Lo que debe vigilar el vigía en este equipo ("youtube",
+    /// "youtube-directos", "instagram"…): las apps en «sin vertical».
+    pub fn guard_keys(&self, serial: &str) -> Vec<String> {
         crate::catalog::all()
             .into_iter()
-            .filter(|a| a.has_vertical() && self.mode(serial, &a.name) == Mode::NoVertical)
-            .flat_map(|a| {
-                let ids = a.vertical.join(",");
-                a.packages.into_iter().map(move |p| format!("{p}:{ids}"))
+            .filter(|a| self.mode(serial, &a.name) == Mode::NoVertical)
+            .filter_map(|a| a.partial)
+            .flat_map(|p| {
+                let extra = p.extra.map(|e| e.key).filter(|k| self.extra_on(serial, k));
+                std::iter::once(p.key).chain(extra)
             })
-            .collect::<Vec<_>>()
-            .join(";")
+            .collect()
     }
 
-    /// Los paquetes que deben estar bloqueados en este equipo.
+    /// Los paquetes que deben estar bloqueados en este equipo: los de las apps
+    /// bloqueadas y, de las que van «sin vertical», los que el vigía no mira
+    /// (Instagram Lite…).
     pub fn blocked_packages(&self, serial: &str) -> Vec<String> {
-        crate::catalog::all()
-            .into_iter()
-            .filter(|a| self.wants(serial, &a.name))
-            .flat_map(|a| a.packages)
-            .collect()
+        crate::catalog::all().into_iter().flat_map(|a| packages_to_block(&a, self.mode(serial, &a.name))).collect()
     }
 
     /// Encender o apagar el filtro web en este equipo.
@@ -166,7 +219,7 @@ pub fn sync_web(serial: &str) -> anyhow::Result<usize> {
     let st = Store::load();
     let domains = st.web_domains(serial);
     if domains.is_empty() {
-        let keep = !st.vertical_rules(serial).is_empty() || crate::device::guard_state(serial)?.owner;
+        let keep = !st.guard_keys(serial).is_empty() || crate::device::guard_state(serial)?.owner;
         crate::device::web_off(serial, keep)?;
     } else {
         crate::device::web_on(serial, &domains)?;
@@ -178,25 +231,35 @@ pub fn sync_web(serial: &str) -> anyhow::Result<usize> {
 /// Devuelve cuántas apps quedan sin vertical.
 pub fn sync_guard(serial: &str) -> anyhow::Result<usize> {
     let st = Store::load();
-    let rules = st.vertical_rules(serial);
-    crate::device::guard_apply(serial, &rules, &st.blocked_packages(serial))?;
-    Ok(if rules.is_empty() { 0 } else { rules.split(';').count() })
+    let keys = st.guard_keys(serial);
+    crate::device::guard_apply(serial, &keys, &st.blocked_packages(serial))?;
+    Ok(crate::catalog::all().iter().filter(|a| st.mode(serial, &a.name) == Mode::NoVertical).count())
 }
 
 /// Cambia el modo de una app y lo deja así en el celular: primero el
 /// guardián (para que suelte lo que deja de estar bloqueado), luego los
 /// candados y al final el filtro web. Devuelve los errores por paquete.
+/// Los paquetes de una app que van con candado en este modo.
+pub fn packages_to_block(app: &crate::catalog::App, mode: Mode) -> Vec<String> {
+    match (mode, &app.partial) {
+        (Mode::Blocked, _) => app.packages.clone(),
+        (Mode::NoVertical, Some(p)) => app.packages.iter().filter(|x| !p.packages.contains(x)).cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn apply_mode(serial: &str, app: &crate::catalog::App, mode: Mode) -> Vec<String> {
     let mut st = Store::load();
     st.set_mode(serial, &app.name, mode);
     let mut errors = Vec::new();
+    let lock = packages_to_block(app, mode);
     if mode != Mode::Blocked {
         if let Err(e) = sync_guard(serial) {
             errors.push(format!("{e:#}"));
         }
     }
     for p in &app.packages {
-        let r = if mode == Mode::Blocked { crate::device::block(serial, p) } else { crate::device::unblock(serial, p) };
+        let r = if lock.contains(p) { crate::device::block(serial, p) } else { crate::device::unblock(serial, p) };
         if let Err(e) = r {
             errors.push(format!("{p}: {e:#}"));
         }

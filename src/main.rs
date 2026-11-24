@@ -13,6 +13,7 @@
 //!   cerrojo dueño [quitar] [-s SERIAL]      (protección máxima)
 //!   cerrojo guardia [SERIAL]        (estado de lo anterior)
 //!   cerrojo vistas [-s SERIAL]      (vistas de la pantalla de ahora, para el catálogo)
+//!   cerrojo solo youtube|instagram si|no [-s SERIAL]   (solo sin Shorts/Reels)
 //!   cerrojo apk PAQUETE ARCHIVO     (solo genera el candado)
 
 // En Windows, sin consola al abrir la ventana; desde una terminal se engancha
@@ -68,6 +69,23 @@ fn main() -> Result<()> {
                     println!("{:<20} {:<40} {:?}", app.name, p, st.get(p).copied().unwrap_or(device::PkgState::Absent));
                 }
             }
+            println!("vigía de Shorts y Reels: {}", if device::guard_state(&serial)?.vertical { "encendido" } else { "apagado" });
+        }
+        // Lo de la versión del fork: «solo APP si» = modo sin vertical, «no» = bloqueada entera.
+        "solo" if rest.len() == 2 => {
+            let serial = pick(serial)?;
+            let Some(app) = catalog::all().into_iter().find(|a| a.partial.as_ref().is_some_and(|p| p.key == rest[0])) else {
+                bail!("«solo» sirve para: youtube, instagram, whatsapp, linkedin");
+            };
+            let on = matches!(rest[1].as_str(), "si" | "sí" | "on");
+            if !on && app.never_blocked() {
+                bail!("{} no se bloquea entera; para que vuelvan sus historias: cerrojo modo {} libre", app.name, rest[0]);
+            }
+            let mode = if on { store::Mode::NoVertical } else { store::Mode::Blocked };
+            for e in store::apply_mode(&serial, &app, mode) {
+                println!("{e}");
+            }
+            println!("{}: {:?}; vigía {}", app.name, mode, if device::guard_state(&serial)?.vertical { "encendido" } else { "apagado" });
         }
         "bloquear" | "desbloquear" if !rest.is_empty() => {
             let serial = pick(serial)?;
@@ -90,13 +108,17 @@ fn main() -> Result<()> {
             // La VPN tarda un instante en levantarse.
             std::thread::sleep(std::time::Duration::from_millis(3500));
             println!("filtro web: {n} dominios bloqueados; estado {:?}", device::web_state(&serial)?);
+            println!("vigía de Shorts y Reels: {}", if device::guard_state(&serial)?.vertical { "encendido" } else { "apagado" });
         }
         "modo" if rest.len() == 2 => {
             let serial = pick(serial)?;
             let app = find_app(&rest[0])?;
             let Some(mode) = store::Mode::parse(&rest[1]) else { bail!("modo: bloqueada, vertical o libre") };
             if mode == store::Mode::NoVertical && !app.has_vertical() {
-                bail!("{} no tiene modo «sin vertical» (no se conocen sus vistas)", app.name);
+                bail!("{} no tiene modo «sin vertical» (el vigía no la conoce)", app.name);
+            }
+            if mode == store::Mode::Blocked && app.never_blocked() {
+                bail!("{} no se bloquea entera: solo «vertical» o «libre»", app.name);
             }
             let errors = store::apply_mode(&serial, &app, mode);
             for e in &errors {
@@ -154,7 +176,7 @@ fn main() -> Result<()> {
         "--ventana" | "--gui" => return gui::run(),
         _ => {
             eprintln!(
-                "uso: cerrojo [estado | bloquear PAQ... | desbloquear PAQ... | web | modo APP MODO | abrir APP MIN | cerrar | dueño [quitar] | guardia | vistas | apk PAQ ARCHIVO] [-s SERIAL]"
+                "uso: cerrojo [estado | bloquear PAQ... | desbloquear PAQ... | web | modo APP MODO | solo APP si|no | abrir APP MIN | cerrar | dueño [quitar] | guardia | vistas | apk PAQ ARCHIVO] [-s SERIAL]"
             );
             std::process::exit(2);
         }
@@ -167,7 +189,7 @@ fn find_app(q: &str) -> Result<catalog::App> {
     let q = q.to_lowercase();
     catalog::all()
         .into_iter()
-        .find(|a| a.name.to_lowercase() == q || a.packages.iter().any(|p| *p == q))
+        .find(|a| a.name.to_lowercase() == q || a.packages.iter().any(|p| *p == q) || a.partial.as_ref().is_some_and(|p| p.key == q))
         .ok_or_else(|| anyhow::anyhow!("no conozco esa app: {q}"))
 }
 

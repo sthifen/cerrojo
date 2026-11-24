@@ -25,15 +25,13 @@ import android.provider.Settings;
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
  * El guardián: corre siempre en primer plano mientras haya algo que vigilar.
- * - Si apagas el servicio de "sin vertical" en Ajustes, lo vuelve a encender
+ * - Si apagas el vigía (accesibilidad) en Ajustes, lo vuelve a encender
  *   (permiso WRITE_SECURE_SETTINGS, que da el PC por adb).
  * - Con protección máxima (propietario del equipo): suspende las apps
  *   bloqueadas en cuanto aparecen, no deja desinstalarlas ni desinstalar el
@@ -58,16 +56,9 @@ public class Guardia extends Service {
         return c.getSharedPreferences(PREFS, MODE_PRIVATE);
     }
 
-    /** "pkg:id1,id2;pkg2:id3" → paquete → vistas. */
-    static Map<String, String[]> reglas(Context c) {
-        Map<String, String[]> m = new HashMap<>();
-        for (String r : prefs(c).getString("vertical", "").split(";")) {
-            int i = r.indexOf(':');
-            if (i <= 0) continue;
-            String[] ids = r.substring(i + 1).split(",");
-            if (ids.length > 0 && !ids[0].isEmpty()) m.put(r.substring(0, i).trim(), ids);
-        }
-        return m;
+    /** Los paquetes que vigila el vigía (apps en «solo los Shorts»). */
+    static Set<String> vigiladas(Context c) {
+        return Vigia.paquetes(c);
     }
 
     static Set<String> bloqueadas(Context c) {
@@ -137,7 +128,7 @@ public class Guardia extends Service {
     }
 
     static boolean hayTrabajo(Context c) {
-        return dueno(c) || !reglas(c).isEmpty();
+        return dueno(c) || !vigiladas(c).isEmpty();
     }
 
     static void encender(Context c) {
@@ -158,7 +149,7 @@ public class Guardia extends Service {
         observador = new ContentObserver(h) {
             @Override
             public void onChange(boolean self) {
-                asegurarVertical();
+                asegurarVigia();
             }
         };
         getContentResolver().registerContentObserver(Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES), false, observador);
@@ -193,7 +184,7 @@ public class Guardia extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        asegurarVertical();
+        asegurarVigia();
         aplicar();
         return START_STICKY;
     }
@@ -216,13 +207,15 @@ public class Guardia extends Service {
     }
 
     /** Que el servicio de accesibilidad siga encendido si hay reglas. */
-    private void asegurarVertical() {
-        if (reglas(this).isEmpty()) return;
-        String yo = new ComponentName(this, Vertical.class).flattenToString();
+    private void asegurarVigia() {
+        if (vigiladas(this).isEmpty()) return;
+        String yo = new ComponentName(this, Vigia.class).flattenToString();
         try {
             String l = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
             boolean esta = false;
-            if (l != null) for (String s : l.split(":")) esta |= s.equalsIgnoreCase(yo);
+            // El PC lo escribe corto (dev.cerrojo.filtro/.Vigia): se comparan componentes.
+            ComponentName c = new ComponentName(this, Vigia.class);
+            if (l != null) for (String s : l.split(":")) esta |= c.equals(ComponentName.unflattenFromString(s.trim()));
             if (!esta) {
                 Settings.Secure.putString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
                         l == null || l.isEmpty() ? yo : l + ":" + yo);
@@ -266,7 +259,7 @@ public class Guardia extends Service {
             if (!abrir.isEmpty()) dpm.setPackagesSuspended(a, abrir.toArray(new String[0]), false);
         } catch (RuntimeException ignored) {
         }
-        for (String p : reglas(this).keySet()) {
+        for (String p : vigiladas(this)) {
             long q = queda(this, p);
             if (q > 0) proxima = Math.min(proxima, q);
         }
@@ -315,10 +308,10 @@ public class Guardia extends Service {
     @Override
     protected void dump(FileDescriptor fd, PrintWriter w, String[] args) {
         w.println("dueno=" + dueno(this));
-        w.println("vertical=" + prefs(this).getString("vertical", ""));
+        w.println("vigia=" + String.join(" ", vigiladas(this)));
         w.println("bloquear=" + prefs(this).getString("bloquear", ""));
         Set<String> todos = new HashSet<>(bloqueadas(this));
-        todos.addAll(reglas(this).keySet());
+        todos.addAll(vigiladas(this));
         for (String p : todos) {
             long q = queda(this, p);
             if (q > 0) w.println("abierto " + p + " " + (q / 1000));

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- La parte de Cerrojo que vive en el celular: el filtro web (una VPN local
-     que solo ve el DNS), el servicio que te saca del video vertical y el
-     guardián (protección máxima). No tiene icono ni pantalla; se maneja por adb
-     (ver src/device.rs del PC). testOnly: así la protección máxima siempre se
-     puede quitar por adb (dpm remove-active-admin). -->
+     que solo ve el DNS), el vigía de Shorts, Reels y Estados (un servicio de
+     accesibilidad) y el guardián (protección máxima). No tiene icono ni
+     pantalla; se maneja por adb (ver src/device.rs del PC). testOnly: así la
+     protección máxima siempre se puede quitar por adb (dpm remove-active-admin). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.cerrojo.filtro">
 
@@ -36,14 +36,16 @@
 
         <service android:name=".Guardia" android:exported="false" />
 
-        <service android:name=".Vertical"
+        <!-- Vigía de Shorts y Reels: lo enciende el PC con
+             settings put secure enabled_accessibility_services. -->
+        <service android:name=".Vigia"
             android:exported="true"
-            android:label="Cerrojo: sin video vertical"
+            android:label="@string/vigia_nombre"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
-            <meta-data android:name="android.accessibilityservice" android:resource="@xml/vertical" />
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/vigia" />
         </service>
 
         <receiver android:name=".Admin"

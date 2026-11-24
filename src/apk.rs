@@ -18,15 +18,16 @@ const MANIFEST: &[u8] = include_bytes!("../assets/manifest-plantilla.axml");
 const ARSC: &[u8] = include_bytes!("../assets/plantilla.arsc");
 const TEMPLATE_PKG: &str = "com.cerrojo.plantilla";
 
-// El filtro web (android/, compilado con android/build.sh).
+// El ayudante del celular: filtro web y vigía (android/, compilado con
+// android/build.sh).
 const FILTER_MANIFEST: &[u8] = include_bytes!("../assets/filtro/AndroidManifest.xml");
 const FILTER_ARSC: &[u8] = include_bytes!("../assets/filtro/resources.arsc");
 const FILTER_DEX: &[u8] = include_bytes!("../assets/filtro/classes.dex");
-const FILTER_XML_VERTICAL: &[u8] = include_bytes!("../assets/filtro/res/xml/vertical.xml");
-const FILTER_XML_ADMIN: &[u8] = include_bytes!("../assets/filtro/res/xml/admin.xml");
 pub const FILTER_PKG: &str = "dev.cerrojo.filtro";
 /// El versionCode de android/build.sh.
-pub const FILTER_VERSION: u32 = 2;
+pub const FILTER_VERSION: u32 = 19;
+// FILTER_RES: los recursos sueltos (res/xml/vigia.xml…), ver build.rs.
+include!(concat!(env!("OUT_DIR"), "/filtro_res.rs"));
 
 /// Lo que lleva el versionName de nuestros candados (también los hechos a
 /// mano con ~/bloqueo-reels, que decían solo "bloqueado").
@@ -41,15 +42,12 @@ pub fn build(package: &str) -> Result<Vec<u8>> {
     sign_v2(unsigned)
 }
 
-/// El filtro web firmado con la clave de este PC.
+/// El ayudante firmado con la clave de este PC.
 pub fn build_filter() -> Result<Vec<u8>> {
-    sign_v2(zip(&[
-        ("AndroidManifest.xml", FILTER_MANIFEST),
-        ("classes.dex", FILTER_DEX),
-        ("res/xml/admin.xml", FILTER_XML_ADMIN),
-        ("res/xml/vertical.xml", FILTER_XML_VERTICAL),
-        ("resources.arsc", FILTER_ARSC),
-    ]))
+    let mut files: Vec<(&str, &[u8])> =
+        vec![("AndroidManifest.xml", FILTER_MANIFEST), ("classes.dex", FILTER_DEX), ("resources.arsc", FILTER_ARSC)];
+    files.extend_from_slice(FILTER_RES);
+    sign_v2(zip(&files))
 }
 
 pub fn valid_package(p: &str) -> bool {

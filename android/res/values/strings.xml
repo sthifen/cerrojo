@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="vertical">Cerrojo: te saca de Shorts, Reels y demás video vertical en las apps que elegiste desde el PC.</string>
+    <string name="vigia_nombre">Cerrojo: sin Shorts, Reels ni Estados</string>
+    <string name="vigia_descripcion">Cierra los Shorts de YouTube, los Reels de Instagram y los Estados de WhatsApp, y tapa su pestaña (también la de Video de LinkedIn). Lo pone y lo quita Cerrojo desde el PC. No guarda ni envía nada.</string>
 </resources>

@@ -394,10 +394,13 @@ pub fn web_off(serial: &str, keep_app: bool) -> Result<()> {
 
 // ---- Guardián: sin vertical, protección máxima y desbloqueos temporales ----
 //
-// La misma app del filtro (android/Guardia.java, Vertical.java, Admin.java).
-// - «Sin vertical»: un servicio de accesibilidad que te saca de Shorts/Reels.
-//   Se enciende por adb (settings secure) y la app tiene WRITE_SECURE_SETTINGS
-//   para volver a encenderlo si lo apagas en Ajustes.
+// La misma app del filtro (android/Guardia.java, Vigia.java, Admin.java).
+// - «Sin vertical»: el vigía (android/…/Vigia.java), un servicio de
+//   accesibilidad que cierra el reproductor de Shorts/Reels/Estados y tapa su
+//   pestaña. Se enciende por adb (settings secure) y la app tiene
+//   WRITE_SECURE_SETTINGS para volver a encenderlo si lo apagas en Ajustes.
+//   ACCESS_RESTRICTED_SETTINGS evita el aviso de "ajuste restringido" de
+//   Android 13+ con apps que no vienen de una tienda.
 // - Protección máxima: la app es propietaria del equipo (Device Owner). Así
 //   suspende sola las apps bloqueadas que aparezcan, no deja desinstalar los
 //   candados ni el filtro, ni tocar la VPN, y cierra sola los desbloqueos
@@ -407,7 +410,7 @@ pub fn web_off(serial: &str, keep_app: bool) -> Result<()> {
 pub struct GuardState {
     pub installed: bool,
     pub owner: bool,
-    /// El servicio de «sin vertical» está encendido en Ajustes.
+    /// El vigía («sin vertical») está encendido en Ajustes.
     pub vertical: bool,
     /// Desbloqueos temporales: paquete → segundos que quedan.
     pub open: Vec<(String, u64)>,
@@ -428,7 +431,7 @@ pub fn guard_state(serial: &str) -> Result<GuardState> {
         return Ok(GuardState::default());
     }
     let mut g = GuardState { installed: true, ..Default::default() };
-    g.vertical = parts[1].split(':').any(|s| s.trim().eq_ignore_ascii_case(&format!("{p}/{p}.Vertical")) || s.trim() == format!("{p}/.Vertical"));
+    g.vertical = parts[1].split(':').any(|s| s.trim() == format!("{p}/{p}.Vigia") || s.trim() == format!("{p}/.Vigia"));
     g.owner = parts[2].lines().find_map(|n| n.trim().parse::<u32>().ok()).unwrap_or(0) > 0;
     for line in parts[3].lines() {
         let mut it = line.split_whitespace();
@@ -448,20 +451,29 @@ fn ensure_filter(serial: &str) -> Result<()> {
     Ok(())
 }
 
-/// Le pasa al guardián las reglas de «sin vertical» y la lista de paquetes
-/// bloqueados, y enciende (o apaga) el servicio de accesibilidad.
-pub fn guard_apply(serial: &str, rules: &str, blocked: &[String]) -> Result<()> {
+/// La app de YouTube, a la que se le quita el picture-in-picture con el vigía:
+/// un Short en ventana flotante quedaría fuera de su alcance.
+const YT: &str = "com.google.android.youtube";
+
+/// Le pasa al guardián qué vigila el vigía ("youtube instagram…") y la lista
+/// de paquetes bloqueados, y enciende (o apaga) el servicio de accesibilidad.
+pub fn guard_apply(serial: &str, keys: &[String], blocked: &[String]) -> Result<()> {
     let p = apk::FILTER_PKG;
+    let keys: Vec<&str> =
+        keys.iter().map(String::as_str).filter(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).collect();
+    let pip = if keys.contains(&"youtube") { "ignore" } else { "default" };
     let g = guard_state(serial)?;
-    if rules.is_empty() && !g.owner {
+    if keys.is_empty() && !g.owner {
         if g.installed {
-            // Apagar el servicio de accesibilidad si lo pusimos nosotros.
-            shell(serial, &format!("am start -n {p}/.Orden --es vertical ''; {}", accessibility_script(false)))?;
+            // Apagar el vigía si lo pusimos nosotros.
+            shell(
+                serial,
+                &format!("am start -n {p}/.Orden --es vigia '' >/dev/null; {}; appops set {YT} PICTURE_IN_PICTURE default", accessibility_script(false)),
+            )?;
         }
         return Ok(());
     }
     ensure_filter(serial)?;
-    let rules: String = rules.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | ',' | ';' | '/')).collect();
     let blocked: Vec<&str> = blocked.iter().map(String::as_str).filter(|p| apk::valid_package(p)).collect();
     let out = shell(
         serial,
@@ -469,9 +481,11 @@ pub fn guard_apply(serial: &str, rules: &str, blocked: &[String]) -> Result<()> 
             "pm grant {p} android.permission.WRITE_SECURE_SETTINGS; appops set {p} ACCESS_RESTRICTED_SETTINGS allow 2>/dev/null; \
              appops set {p} SCHEDULE_EXACT_ALARM allow 2>/dev/null; cmd deviceidle whitelist +{p} >/dev/null; \
              dpm set-active-admin --user 0 {p}/.Admin >/dev/null 2>&1; \
-             am start -n {p}/.Orden --es vertical '{rules}' --es bloquear '{}' >/dev/null; sleep 1; {}",
+             am start -n {p}/.Orden --es vigia '{}' --es bloquear '{}' >/dev/null; sleep 1; {}; \
+             appops set {YT} PICTURE_IN_PICTURE {pip} 2>/dev/null",
+            keys.join(" "),
             blocked.join(" "),
-            accessibility_script(!rules.is_empty())
+            accessibility_script(!keys.is_empty())
         ),
     )?;
     if out.contains("Exception") {
@@ -482,10 +496,10 @@ pub fn guard_apply(serial: &str, rules: &str, blocked: &[String]) -> Result<()> 
 
 /// Pone o quita nuestro servicio en la lista de accesibilidad sin tocar los demás.
 fn accessibility_script(on: bool) -> String {
-    let me = format!("{}/.Vertical", apk::FILTER_PKG);
+    let me = format!("{}/.Vigia", apk::FILTER_PKG);
     let rest = format!(
         "l=$(settings get secure enabled_accessibility_services); [ \"$l\" = null ] && l=''; \
-         r=$(echo \"$l\" | tr ':' '\\n' | grep -v -i -e '^{me}$' -e '^{p}/{p}.Vertical$' | grep . | tr '\\n' ':' | sed 's/:$//')",
+         r=$(echo \"$l\" | tr ':' '\\n' | grep -v -i -e '^{me}$' -e '^{p}/{p}.Vigia$' -e '^{p}/{p}.Vertical$' -e '^{p}/.Vertical$' | grep . | tr '\\n' ':' | sed 's/:$//')",
         p = apk::FILTER_PKG
     );
     if on {
