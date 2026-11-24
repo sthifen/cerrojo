@@ -18,7 +18,7 @@ use gtk4 as gtk;
 
 use crate::catalog::{self, App};
 use crate::device::{self, Device, PkgState};
-use crate::store::Store;
+use crate::store::{Mode, Store};
 
 const WIN_W: i32 = 780;
 const WIN_H: i32 = 480;
@@ -85,6 +85,12 @@ button.primary:disabled { background-color: rgba(255,255,255,0.12); color: rgba(
 button.ghost { background-color: transparent; color: #E6E8EE; border: 1px solid rgba(255,255,255,0.22); }
 button.ghost:hover { background-color: rgba(255,255,255,0.08); }
 button.ghost.small { min-height: 34px; padding: 0 14px; border-radius: 12px; }
+button.vtoggle:checked { background-color: rgba(0,195,227,0.22); border-color: rgba(0,195,227,0.7); color: #9DEBF7; }
+menubutton.ghost > button { min-height: 34px; padding: 0 12px; border-radius: 12px; background-image: none; box-shadow: none;
+  background-color: transparent; color: #E6E8EE; border: 1px solid rgba(255,255,255,0.22); font-weight: 600; }
+menubutton.ghost > button:hover { background-color: rgba(255,255,255,0.08); }
+popover contents { background-color: rgba(40,42,54,0.98); border-radius: 14px; }
+popover button.flat { color: #E6E8EE; min-height: 32px; }
 .footer { padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.10); }
 .foot-hint { font-size: 12px; color: rgba(230,232,238,0.62); }
 .empty-title { font-size: 20px; font-weight: 700; color: #F4F5F8; }
@@ -103,6 +109,12 @@ window.cerrojo.csd { border-radius: 0; box-shadow: none; }
 
 const APP_WHY: &str =
     "Se podrá volver a instalar desde la Play Store. Si lo haces por un rato, acuérdate de bloquearla después.";
+const VERTICAL_WHY: &str = "Volverás a ver ese video vertical en la app. Si es por un rato, mejor usa «Abrir un rato»: se cierra sola.";
+const OWNER_ON_WHY: &str = "Con esto el celular se cuida solo, sin el PC: no deja desinstalar los candados ni Cerrojo, ni apagar la VPN, \
+     y si instalas una app bloqueada la suspende al momento. También deja abrir apps un rato y cerrarlas solas.\n\n\
+     Android solo lo permite sin cuentas: antes quita las cuentas de Google y Samsung (Ajustes › Cuentas) y la Carpeta Segura; \
+     cuando termine, vuelve a añadirlas.";
+const OWNER_OFF_WHY: &str = "El celular dejará de cuidarse solo: los candados se podrán quitar desde la Play Store hasta que lo conectes a este PC.";
 const WEB_WHY: &str = "Instagram, TikTok, Facebook… volverán a abrir en el navegador del celular. \
      Si lo haces por un rato, acuérdate de activarlo después.";
 
@@ -111,9 +123,11 @@ const WEB_WHY: &str = "Instagram, TikTok, Facebook… volverán a abrir en el na
 enum Job {
     Refresh(String),
     Block { serial: String, apps: Vec<App>, auto: bool },
-    Unblock { serial: String, app: App },
     /// Poner el filtro web como dice equipos.json.
     Web(String),
+    Mode { serial: String, app: App, mode: Mode },
+    Open { serial: String, app: App, minutes: u32 },
+    Owner { serial: String, on: bool },
 }
 
 enum Msg {
@@ -122,6 +136,7 @@ enum Msg {
     Busy(String, String),
     Done(String, String),
     Web(String, device::WebState),
+    Guard(String, device::GuardState),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -155,7 +170,15 @@ fn worker(jobs: mpsc::Receiver<Job>, tx: mpsc::Sender<Msg>) {
             }
         }
     };
+    let guard = |serial: &str| {
+        if let Ok(g) = device::guard_state(serial) {
+            let _ = tx.send(Msg::Guard(serial.to_string(), g));
+        }
+    };
     let web = |serial: &str, errors: &mut Vec<String>| {
+        if let Err(e) = crate::store::sync_guard(serial) {
+            errors.push(format!("sin vertical: {e:#}"));
+        }
         let _ = tx.send(Msg::Busy(serial.to_string(), "Bloqueando sus páginas web…".into()));
         if let Err(e) = crate::store::sync_web(serial) {
             errors.push(format!("filtro web: {e:#}"));
@@ -170,9 +193,69 @@ fn worker(jobs: mpsc::Receiver<Job>, tx: mpsc::Sender<Msg>) {
         match job {
             Job::Refresh(serial) => {
                 refresh(&serial);
+                guard(&serial);
                 if let Ok(w) = device::web_state(&serial) {
                     let _ = tx.send(Msg::Web(serial, w));
                 }
+            }
+            Job::Mode { serial, app, mode } => {
+                let what = match mode {
+                    Mode::Blocked => "Bloqueando",
+                    Mode::NoVertical => "Quitando el video vertical de",
+                    Mode::Free => "Desbloqueando",
+                };
+                let _ = tx.send(Msg::Busy(serial.clone(), format!("{what} {}…", app.name)));
+                let errors = crate::store::apply_mode(&serial, &app, mode);
+                std::thread::sleep(Duration::from_millis(1500));
+                if let Ok(w) = device::web_state(&serial) {
+                    let _ = tx.send(Msg::Web(serial.clone(), w));
+                }
+                refresh(&serial);
+                guard(&serial);
+                let text = if !errors.is_empty() {
+                    format!("Falló: {}", errors.join("; "))
+                } else {
+                    match mode {
+                        Mode::Blocked => String::new(),
+                        Mode::NoVertical => format!("{}: se puede usar, pero sin {}", app.name, app.hint),
+                        Mode::Free => format!("{} desbloqueada: ya se puede instalar", app.name),
+                    }
+                };
+                let _ = tx.send(Msg::Done(serial, text));
+            }
+            Job::Open { serial, app, minutes } => {
+                let _ = tx.send(Msg::Busy(serial.clone(), format!("Abriendo {}…", app.name)));
+                let blocked = Store::load().mode(&serial, &app.name) == Mode::Blocked;
+                let text = match device::open_for(&serial, &app.packages, minutes, blocked) {
+                    Ok(()) => format!("{} abierta {minutes} min: luego se cierra sola, aunque desconectes el cable", app.name),
+                    Err(e) => format!("Falló: {e:#}"),
+                };
+                std::thread::sleep(Duration::from_millis(800));
+                refresh(&serial);
+                guard(&serial);
+                let _ = tx.send(Msg::Done(serial, text));
+            }
+            Job::Owner { serial, on } => {
+                let _ = tx.send(Msg::Busy(serial.clone(), "Cambiando la protección…".into()));
+                let r = if on {
+                    let blocked = Store::load().blocked_packages(&serial);
+                    device::make_owner(&serial, &blocked).and_then(|_| crate::store::sync_guard(&serial).map(|_| ()))
+                } else {
+                    device::release_owner(&serial).map(|_| {
+                        // Sin propietario, las suspensiones vuelven a ser cosa de adb.
+                        for p in Store::load().blocked_packages(&serial) {
+                            let _ = device::block(&serial, &p);
+                        }
+                    })
+                };
+                refresh(&serial);
+                guard(&serial);
+                let text = match (r, on) {
+                    (Ok(()), true) => "Protección máxima puesta: ya puedes volver a añadir tus cuentas".to_string(),
+                    (Ok(()), false) => "Protección máxima quitada".to_string(),
+                    (Err(e), _) => format!("Falló: {e:#}"),
+                };
+                let _ = tx.send(Msg::Done(serial, text));
             }
             Job::Web(serial) => {
                 let mut errors = Vec::new();
@@ -199,23 +282,7 @@ fn worker(jobs: mpsc::Receiver<Job>, tx: mpsc::Sender<Msg>) {
                     String::new()
                 };
                 refresh(&serial);
-                let _ = tx.send(Msg::Done(serial, text));
-            }
-            Job::Unblock { serial, app } => {
-                let _ = tx.send(Msg::Busy(serial.clone(), format!("Desbloqueando {}…", app.name)));
-                let mut errors = Vec::new();
-                for p in &app.packages {
-                    if let Err(e) = device::unblock(&serial, p) {
-                        errors.push(format!("{p}: {e}"));
-                    }
-                }
-                web(&serial, &mut errors);
-                refresh(&serial);
-                let text = if errors.is_empty() {
-                    format!("{} desbloqueada: ya se puede instalar", app.name)
-                } else {
-                    format!("Falló: {}", errors.join("; "))
-                };
+                guard(&serial);
                 let _ = tx.send(Msg::Done(serial, text));
             }
         }
@@ -244,6 +311,9 @@ struct Row {
     app: App,
     chip: gtk::Label,
     switch: gtk::Switch,
+    /// «Sin Shorts», «Sin Reels»…: solo en las apps que lo tienen.
+    vertical: Option<gtk::ToggleButton>,
+    open: gtk::MenuButton,
 }
 
 struct Ui {
@@ -256,6 +326,7 @@ struct Ui {
     count: gtk::Label,
     count_sub: gtk::Label,
     block_all: gtk::Button,
+    owner: gtk::Button,
     list: gtk::Box,
     entry: gtk::Entry,
     empty_title: gtk::Label,
@@ -281,6 +352,11 @@ struct State {
     checked: HashSet<String>,
     rows: Vec<Row>,
     pending_unblock: Option<App>,
+    /// Se está confirmando quitar el «sin vertical» de esta app.
+    pending_free: Option<App>,
+    /// Se está confirmando poner (true) o quitar la protección máxima.
+    pending_owner: Option<bool>,
+    guard: HashMap<String, (device::GuardState, Instant)>,
     /// Se está confirmando apagar el filtro web.
     pending_web: bool,
     web: HashMap<String, device::WebState>,
@@ -348,6 +424,9 @@ fn build(app: &gtk::Application) {
         checked: HashSet::new(),
         rows: Vec::new(),
         pending_unblock: None,
+        pending_free: None,
+        pending_owner: None,
+        guard: HashMap::new(),
         pending_web: false,
         web: HashMap::new(),
         web_row: None,
@@ -515,6 +594,10 @@ fn build(app: &gtk::Application) {
         });
     }
     hero.append(&block_all);
+    let owner = gtk::Button::with_label("Protección máxima…");
+    owner.add_css_class("ghost");
+    owner.add_css_class("small");
+    hero.append(&owner);
     main.append(&hero);
 
     let right = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -600,6 +683,7 @@ fn build(app: &gtk::Application) {
         count,
         count_sub,
         block_all,
+        owner: owner.clone(),
         list,
         entry,
         empty_title,
@@ -613,9 +697,30 @@ fn build(app: &gtk::Application) {
 
     {
         let (state, ui) = (state.clone(), ui.clone());
+        owner.connect_clicked(move |_| {
+            let mut s = state.borrow_mut();
+            let Some(serial) = s.current.clone() else { return };
+            let is_owner = s.guard.get(&serial).is_some_and(|(g, _)| g.owner);
+            s.pending_owner = Some(!is_owner);
+            if is_owner {
+                ui.confirm_text.set_text("¿Quitar la protección máxima?");
+                ui.confirm_why.set_text(OWNER_OFF_WHY);
+                ui.confirm_go.set_label("Quitar");
+            } else {
+                ui.confirm_text.set_text("Protección máxima");
+                ui.confirm_why.set_text(OWNER_ON_WHY);
+                ui.confirm_go.set_label("Ya quité las cuentas: activar");
+            }
+            ui.confirm.set_visible(true);
+        });
+    }
+    {
+        let (state, ui) = (state.clone(), ui.clone());
         keep.connect_clicked(move |_| {
             let mut s = state.borrow_mut();
             s.pending_unblock = None;
+            s.pending_free = None;
+            s.pending_owner = None;
             s.pending_web = false;
             drop(s);
             ui.confirm.set_visible(false);
@@ -633,9 +738,19 @@ fn build(app: &gtk::Application) {
                 let _ = s.jobs.send(Job::Web(serial));
                 return;
             }
-            let (Some(app), Some(serial)) = (s.pending_unblock.take(), s.current.clone()) else { return };
-            s.store.set(&serial, &app.name, false);
-            let _ = s.jobs.send(Job::Unblock { serial, app });
+            let Some(serial) = s.current.clone() else { return };
+            if let Some(on) = s.pending_owner.take() {
+                let _ = s.jobs.send(Job::Owner { serial, on });
+                return;
+            }
+            if let Some(app) = s.pending_free.take() {
+                s.store.set_mode(&serial, &app.name, Mode::Free);
+                let _ = s.jobs.send(Job::Mode { serial, app, mode: Mode::Free });
+                return;
+            }
+            let Some(app) = s.pending_unblock.take() else { return };
+            s.store.set_mode(&serial, &app.name, Mode::Free);
+            let _ = s.jobs.send(Job::Mode { serial, app, mode: Mode::Free });
         });
     }
     {
@@ -684,7 +799,9 @@ fn build(app: &gtk::Application) {
                 on_msg(&mut state.borrow_mut(), msg);
                 changed = true;
             }
-            if changed {
+            // La cuenta atrás de los desbloqueos temporales.
+            let tick = Instant::now().duration_since(start).as_millis() % 1000 < 100;
+            if changed || (tick && state.borrow().guard.values().any(|(g, _)| !g.open.is_empty())) {
                 render(&ui, &state);
             }
             aurora.queue_draw();
@@ -749,6 +866,9 @@ fn on_msg(s: &mut State, msg: Msg) {
         }
         Msg::Web(serial, w) => {
             s.web.insert(serial, w);
+        }
+        Msg::Guard(serial, g) => {
+            s.guard.insert(serial, (g, Instant::now()));
         }
         Msg::Done(serial, text) => {
             if s.current.as_deref() == Some(&serial) {
@@ -832,6 +952,62 @@ fn rebuild_rows(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
         chip.add_css_class("chip");
         chip.set_valign(gtk::Align::Center);
         row.append(&chip);
+        let open = gtk::MenuButton::new();
+        open.set_label("Abrir…");
+        open.set_tooltip_text(Some("Abrirla un rato: se vuelve a cerrar sola, aunque desconectes el cable"));
+        open.add_css_class("ghost");
+        open.set_valign(gtk::Align::Center);
+        {
+            let pop = gtk::Popover::new();
+            let b = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            for minutes in [10u32, 20, 30, 60] {
+                let item = gtk::Button::with_label(&format!("{minutes} min"));
+                item.add_css_class("flat");
+                let (state, app, pop) = (state.clone(), app.clone(), pop.clone());
+                item.connect_clicked(move |_| {
+                    pop.popdown();
+                    let s = state.borrow();
+                    let Some(serial) = s.current.clone() else { return };
+                    let _ = s.jobs.send(Job::Open { serial, app: app.clone(), minutes });
+                });
+                b.append(&item);
+            }
+            pop.set_child(Some(&b));
+            open.set_popover(Some(&pop));
+        }
+        row.append(&open);
+        let vertical = app.has_vertical().then(|| {
+            let t = gtk::ToggleButton::with_label(&format!("Sin {}", app.hint));
+            t.add_css_class("ghost");
+            t.add_css_class("small");
+            t.add_css_class("vtoggle");
+            t.set_valign(gtk::Align::Center);
+            t.set_tooltip_text(Some("Deja usar la app pero te saca de su video vertical"));
+            let (state, ui, app) = (state.clone(), ui.clone(), app.clone());
+            t.connect_toggled(move |t| {
+                if t.widget_name() == "sync" {
+                    return;
+                }
+                let mut s = state.borrow_mut();
+                let Some(serial) = s.current.clone() else { return };
+                if t.is_active() {
+                    s.store.set_mode(&serial, &app.name, Mode::NoVertical);
+                    let _ = s.jobs.send(Job::Mode { serial, app: app.clone(), mode: Mode::NoVertical });
+                } else {
+                    // Que cueste un poco: se confirma y, mientras, sigue puesto.
+                    t.set_widget_name("sync");
+                    t.set_active(true);
+                    t.set_widget_name("");
+                    s.pending_free = Some(app.clone());
+                    ui.confirm_text.set_text(&format!("¿Volver a ver {} en {}?", app.hint, app.name));
+                    ui.confirm_why.set_text(VERTICAL_WHY);
+                    ui.confirm_go.set_label("Quitar el filtro");
+                    ui.confirm.set_visible(true);
+                }
+            });
+            row.append(&t);
+            t
+        });
         let switch = gtk::Switch::new();
         switch.set_valign(gtk::Align::Center);
         {
@@ -844,8 +1020,8 @@ fn rebuild_rows(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
                 let mut s = state.borrow_mut();
                 let Some(serial) = s.current.clone() else { return glib::Propagation::Stop };
                 if on {
-                    s.store.set(&serial, &app.name, true);
-                    let _ = s.jobs.send(Job::Block { serial, apps: vec![app.clone()], auto: false });
+                    s.store.set_mode(&serial, &app.name, Mode::Blocked);
+                    let _ = s.jobs.send(Job::Mode { serial, app: app.clone(), mode: Mode::Blocked });
                     glib::Propagation::Proceed
                 } else {
                     s.pending_unblock = Some(app.clone());
@@ -859,7 +1035,7 @@ fn rebuild_rows(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
         }
         row.append(&switch);
         ui.list.append(&row);
-        rows.push(Row { app, chip, switch });
+        rows.push(Row { app, chip, switch, vertical, open });
     }
     state.borrow_mut().rows = rows;
 }
@@ -943,8 +1119,29 @@ fn render(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
     let busy = s.busy.clone();
     let mut blocked = 0;
     let mut live = 0;
+    let guard = s.guard.get(&device.serial).cloned();
+    let owner = guard.as_ref().is_some_and(|(g, _)| g.owner);
     for row in &s.rows {
+        let mode = s.store.mode(&device.serial, &row.app.name);
+        let open_left = guard.as_ref().and_then(|(g, at)| {
+            g.open
+                .iter()
+                .filter(|(p, _)| row.app.packages.contains(p))
+                .map(|(_, secs)| secs.saturating_sub(at.elapsed().as_secs()))
+                .max()
+                .filter(|l| *l > 0)
+        });
+        let vertical_on = mode == Mode::NoVertical && guard.as_ref().is_some_and(|(g, _)| g.vertical);
+        let label;
         let (text, class, on) = match st.as_ref().map(|m| app_state(&row.app, m)) {
+            _ if open_left.is_some() => {
+                label = format!("Abierta {} min", open_left.unwrap().div_ceil(60));
+                (label.as_str(), "live", mode == Mode::Blocked)
+            }
+            Some(AppState::Live | AppState::Free) if vertical_on => {
+                label = format!("Sin {}", row.app.hint);
+                (label.as_str(), "blocked", false)
+            }
             Some(AppState::Blocked) => ("Bloqueada", "blocked", true),
             Some(AppState::Live) => ("Instalada", "live", false),
             Some(AppState::Free) => ("Sin bloquear", "", false),
@@ -952,9 +1149,24 @@ fn render(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
         };
         match st.as_ref().map(|m| app_state(&row.app, m)) {
             Some(AppState::Blocked) => blocked += 1,
+            Some(AppState::Live) if vertical_on => blocked += 1,
             Some(AppState::Live) => live += 1,
             _ => {}
         }
+        if let Some(t) = &row.vertical {
+            let want = mode == Mode::NoVertical;
+            if t.is_active() != want {
+                t.set_widget_name("sync");
+                t.set_active(want);
+                t.set_widget_name("");
+            }
+            t.set_visible(mode != Mode::Blocked);
+            t.set_sensitive(busy.is_none() && st.is_some());
+        }
+        // Con «Sin Shorts» encendido el botón ya dice el estado.
+        row.chip.set_visible(!(vertical_on && open_left.is_none() && row.vertical.is_some()));
+        row.open.set_visible(open_left.is_none() && (mode == Mode::NoVertical || (mode == Mode::Blocked && owner)));
+        row.open.set_sensitive(busy.is_none() && st.is_some());
         row.chip.set_text(text);
         set_classes(&row.chip, class, &["blocked", "live"]);
         if row.switch.is_active() != on || row.switch.state() != on {
@@ -1001,6 +1213,8 @@ fn render(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
     set_classes(&ui.hero, if all_blocked { "safe" } else if live > 0 { "open" } else { "" }, &["safe", "open"]);
     ui.block_all.set_sensitive(busy.is_none() && st.is_some() && !all_blocked);
     ui.block_all.set_label(if all_blocked { "Todo bloqueado" } else { "Bloquear todo" });
+    ui.owner.set_label(if owner { "Protección máxima ✓" } else { "Protección máxima…" });
+    ui.owner.set_sensitive(busy.is_none() && guard.is_some());
     ui.lock.queue_draw();
 
     if let Some(b) = &busy {

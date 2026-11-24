@@ -222,6 +222,11 @@ fn install_stub(serial: &str, package: &str) -> Result<()> {
 fn suspend(serial: &str, package: &str, on: bool) -> Result<()> {
     let verb = if on { "suspend" } else { "unsuspend" };
     let out = shell(serial, &format!("cmd package {verb} --user 0 {package}"))?;
+    if out.contains("active DO or PO") {
+        // Con protección máxima solo el guardián puede suspender: lo hace él
+        // con la lista que le manda sync_guard.
+        return Ok(());
+    }
     if !out.contains("new suspended state") {
         bail!("no se pudo {} {package}: {}", if on { "suspender" } else { "reactivar" }, out.trim());
     }
@@ -294,8 +299,8 @@ pub fn web_state(serial: &str) -> Result<WebState> {
     let out = shell(
         serial,
         &format!(
-            "pm path {p}; echo @@; dumpsys package {p} | grep -m1 versionCode=; echo @@; \
-             dumpsys connectivity | grep -c '10.111.222.2/32'"
+            "pm path {p}; echo @@; dumpsys package {p} 2>/dev/null | grep -m1 versionCode=; echo @@; \
+             dumpsys connectivity 2>/dev/null | grep -c '10.111.222.2/32'"
         ),
     )?;
     let parts: Vec<&str> = out.split("@@").collect();
@@ -311,7 +316,8 @@ pub fn web_state(serial: &str) -> Result<WebState> {
     if version < apk::FILTER_VERSION {
         return Ok(WebState::Absent);
     }
-    let vpn = parts[2].trim().lines().last().and_then(|n| n.trim().parse::<u32>().ok()).unwrap_or(0);
+    // Solo la línea del número: los avisos de stderr van al final.
+    let vpn = parts[2].lines().find_map(|n| n.trim().parse::<u32>().ok()).unwrap_or(0);
     Ok(if vpn > 0 { WebState::On } else { WebState::Off })
 }
 
@@ -319,7 +325,9 @@ fn install_filter(serial: &str) -> Result<()> {
     let bytes = apk::build_filter()?;
     let path = std::env::temp_dir().join(format!("cerrojo-{}-filtro.apk", std::process::id()));
     std::fs::File::create(&path)?.write_all(&bytes)?;
-    let install = || adb().arg("-s").arg(serial).arg("install").arg("-r").arg(&path).stdin(Stdio::null()).output();
+    // -t: el filtro es testOnly, para que la protección máxima siempre se
+    // pueda quitar por adb.
+    let install = || adb().arg("-s").arg(serial).args(["install", "-r", "-t"]).arg(&path).stdin(Stdio::null()).output();
     let mut out = install()?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
     if text.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") {
@@ -361,20 +369,236 @@ pub fn web_on(serial: &str, domains: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Quita el filtro del todo.
-pub fn web_off(serial: &str) -> Result<()> {
+/// Apaga el filtro web. Con keep_app la app se queda (hace falta para el
+/// «sin vertical» o la protección máxima); si no, se desinstala.
+pub fn web_off(serial: &str, keep_app: bool) -> Result<()> {
     let p = apk::FILTER_PKG;
     if !shell(serial, &format!("pm path {p}"))?.contains("package:") {
         return Ok(());
     }
+    let uninstall = if keep_app {
+        String::new()
+    } else {
+        format!("cmd deviceidle whitelist -{p} >/dev/null; dpm remove-active-admin --user 0 {p}/.Admin >/dev/null 2>&1; sleep 1; pm uninstall {p}")
+    };
     shell(
         serial,
         &format!(
             "am start -n {p}/.Orden --ez apagar true; \
              [ \"$(settings get secure always_on_vpn_app)\" = {p} ] && settings delete secure always_on_vpn_app; \
-             settings put global private_dns_mode opportunistic; cmd deviceidle whitelist -{p} >/dev/null; \
-             sleep 1; pm uninstall {p}"
+             settings put global private_dns_mode opportunistic; {uninstall}"
         ),
     )?;
     Ok(())
+}
+
+// ---- Guardián: sin vertical, protección máxima y desbloqueos temporales ----
+//
+// La misma app del filtro (android/Guardia.java, Vertical.java, Admin.java).
+// - «Sin vertical»: un servicio de accesibilidad que te saca de Shorts/Reels.
+//   Se enciende por adb (settings secure) y la app tiene WRITE_SECURE_SETTINGS
+//   para volver a encenderlo si lo apagas en Ajustes.
+// - Protección máxima: la app es propietaria del equipo (Device Owner). Así
+//   suspende sola las apps bloqueadas que aparezcan, no deja desinstalar los
+//   candados ni el filtro, ni tocar la VPN, y cierra sola los desbloqueos
+//   temporales aunque el PC no esté.
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuardState {
+    pub installed: bool,
+    pub owner: bool,
+    /// El servicio de «sin vertical» está encendido en Ajustes.
+    pub vertical: bool,
+    /// Desbloqueos temporales: paquete → segundos que quedan.
+    pub open: Vec<(String, u64)>,
+}
+
+pub fn guard_state(serial: &str) -> Result<GuardState> {
+    let p = apk::FILTER_PKG;
+    let out = shell(
+        serial,
+        &format!(
+            "pm path {p}; echo @@; settings get secure enabled_accessibility_services; echo @@; \
+             dumpsys device_policy 2>/dev/null | grep -A3 -i 'device owner' | grep -c {p}; echo @@; \
+             dumpsys activity service {p}/.Guardia"
+        ),
+    )?;
+    let parts: Vec<&str> = out.split("@@").collect();
+    if parts.len() < 4 || !parts[0].contains("package:") {
+        return Ok(GuardState::default());
+    }
+    let mut g = GuardState { installed: true, ..Default::default() };
+    g.vertical = parts[1].split(':').any(|s| s.trim().eq_ignore_ascii_case(&format!("{p}/{p}.Vertical")) || s.trim() == format!("{p}/.Vertical"));
+    g.owner = parts[2].lines().find_map(|n| n.trim().parse::<u32>().ok()).unwrap_or(0) > 0;
+    for line in parts[3].lines() {
+        let mut it = line.split_whitespace();
+        if it.next() == Some("abierto") {
+            if let (Some(pkg), Some(secs)) = (it.next(), it.next().and_then(|s| s.parse().ok())) {
+                g.open.push((pkg.to_string(), secs));
+            }
+        }
+    }
+    Ok(g)
+}
+
+fn ensure_filter(serial: &str) -> Result<()> {
+    if web_state(serial)? == WebState::Absent {
+        install_filter(serial)?;
+    }
+    Ok(())
+}
+
+/// Le pasa al guardián las reglas de «sin vertical» y la lista de paquetes
+/// bloqueados, y enciende (o apaga) el servicio de accesibilidad.
+pub fn guard_apply(serial: &str, rules: &str, blocked: &[String]) -> Result<()> {
+    let p = apk::FILTER_PKG;
+    let g = guard_state(serial)?;
+    if rules.is_empty() && !g.owner {
+        if g.installed {
+            // Apagar el servicio de accesibilidad si lo pusimos nosotros.
+            shell(serial, &format!("am start -n {p}/.Orden --es vertical ''; {}", accessibility_script(false)))?;
+        }
+        return Ok(());
+    }
+    ensure_filter(serial)?;
+    let rules: String = rules.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | ',' | ';' | '/')).collect();
+    let blocked: Vec<&str> = blocked.iter().map(String::as_str).filter(|p| apk::valid_package(p)).collect();
+    let out = shell(
+        serial,
+        &format!(
+            "pm grant {p} android.permission.WRITE_SECURE_SETTINGS; appops set {p} ACCESS_RESTRICTED_SETTINGS allow 2>/dev/null; \
+             appops set {p} SCHEDULE_EXACT_ALARM allow 2>/dev/null; cmd deviceidle whitelist +{p} >/dev/null; \
+             dpm set-active-admin --user 0 {p}/.Admin >/dev/null 2>&1; \
+             am start -n {p}/.Orden --es vertical '{rules}' --es bloquear '{}' >/dev/null; sleep 1; {}",
+            blocked.join(" "),
+            accessibility_script(!rules.is_empty())
+        ),
+    )?;
+    if out.contains("Exception") {
+        bail!("no se pudo poner el guardián: {}", out.trim());
+    }
+    Ok(())
+}
+
+/// Pone o quita nuestro servicio en la lista de accesibilidad sin tocar los demás.
+fn accessibility_script(on: bool) -> String {
+    let me = format!("{}/.Vertical", apk::FILTER_PKG);
+    let rest = format!(
+        "l=$(settings get secure enabled_accessibility_services); [ \"$l\" = null ] && l=''; \
+         r=$(echo \"$l\" | tr ':' '\\n' | grep -v -i -e '^{me}$' -e '^{p}/{p}.Vertical$' | grep . | tr '\\n' ':' | sed 's/:$//')",
+        p = apk::FILTER_PKG
+    );
+    if on {
+        format!(
+            "{rest}; if [ -z \"$r\" ]; then n='{me}'; else n=\"$r:{me}\"; fi; \
+             settings put secure enabled_accessibility_services \"$n\"; settings put secure accessibility_enabled 1"
+        )
+    } else {
+        format!(
+            "{rest}; if [ \"$r\" != \"$l\" ]; then if [ -z \"$r\" ]; then settings delete secure enabled_accessibility_services; \
+             else settings put secure enabled_accessibility_services \"$r\"; fi; fi"
+        )
+    }
+}
+
+/// Las cuentas del celular que impiden la protección máxima.
+pub fn accounts(serial: &str) -> Result<Vec<String>> {
+    let out = shell(serial, "dumpsys account | grep -E '^ *Account \\{'")?;
+    Ok(out
+        .lines()
+        .filter_map(|l| l.split("type=").nth(1).map(|t| t.trim_end_matches(['}', ' ']).to_string()))
+        .collect())
+}
+
+/// Hace al filtro propietario del equipo. Antes hay que quitar las cuentas.
+/// Con propietario, adb ya no puede suspender ni reactivar apps: las
+/// suspensiones hechas por adb se quitan antes y las pone el guardián.
+pub fn make_owner(serial: &str, blocked: &[String]) -> Result<()> {
+    ensure_filter(serial)?;
+    let acc = accounts(serial)?;
+    if !acc.is_empty() {
+        bail!("primero quita estas cuentas del celular (Ajustes › Cuentas): {}", acc.join(", "));
+    }
+    let suspended: Vec<String> = infos(serial, &blocked.iter().map(String::as_str).collect::<Vec<_>>())?
+        .into_iter()
+        .filter(|(_, i)| i.present && i.installed && i.suspended)
+        .map(|(p, _)| p)
+        .collect();
+    for p in &suspended {
+        suspend(serial, p, false)?;
+    }
+    let out = shell(serial, &format!("dpm set-device-owner {}/.Admin", apk::FILTER_PKG))?;
+    if !out.contains("Success") {
+        for p in &suspended {
+            let _ = suspend(serial, p, true);
+        }
+        let why = if out.contains("several users") || out.contains("multiple users") {
+            "hay otro usuario o la Carpeta Segura; quítalos primero".to_string()
+        } else {
+            out.trim().to_string()
+        };
+        bail!("Android no dejó activarla: {why}");
+    }
+    Ok(())
+}
+
+pub fn release_owner(serial: &str) -> Result<()> {
+    let p = apk::FILTER_PKG;
+    shell(serial, &format!("am start -n {p}/.Orden --ez soltar true"))?;
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    if guard_state(serial)?.owner {
+        let out = shell(serial, &format!("dpm remove-active-admin {p}/.Admin"))?;
+        if !out.contains("Success") {
+            bail!("no se pudo quitar: {}", out.trim());
+        }
+    }
+    Ok(())
+}
+
+/// Desbloqueo temporal: la app (o su video vertical) vuelve a cerrarse sola
+/// a los `minutes`, esté o no conectado el PC.
+pub fn open_for(serial: &str, packages: &[String], minutes: u32, blocked: bool) -> Result<()> {
+    let p = apk::FILTER_PKG;
+    if blocked {
+        if !guard_state(serial)?.owner {
+            bail!("para abrir un rato una app bloqueada hace falta la protección máxima");
+        }
+        let info = infos(serial, &packages.iter().map(String::as_str).collect::<Vec<_>>())?;
+        if info.values().any(|i| i.present && i.ours) {
+            bail!("tiene candado (no está la app real); ponla en «sin vertical» o desbloquéala");
+        }
+        for (pkg, i) in &info {
+            if i.present && i.suspended {
+                // Quita la suspensión del shell; la del guardián la quita él.
+                shell(serial, &format!("cmd package unsuspend --user 0 {pkg}"))?;
+            }
+        }
+    }
+    let list: Vec<&str> = packages.iter().map(String::as_str).filter(|p| apk::valid_package(p)).collect();
+    shell(serial, &format!("am start -n {p}/.Orden --es abrir '{}' --ei minutos {minutes}", list.join(" ")))?;
+    Ok(())
+}
+
+/// Acaba ya los desbloqueos temporales.
+pub fn close_open(serial: &str) -> Result<()> {
+    shell(serial, &format!("am start -n {}/.Orden --ez cerrar true", apk::FILTER_PKG))?;
+    Ok(())
+}
+
+/// Las vistas con nombre de la pantalla de ahora (para sacar las de video
+/// vertical de una app: ábrelo en el celular y corre `cerrojo vistas`).
+pub fn views(serial: &str) -> Result<(String, Vec<String>)> {
+    let out = shell(serial, "uiautomator dump /sdcard/cerrojo-vistas.xml >/dev/null && cat /sdcard/cerrojo-vistas.xml; rm -f /sdcard/cerrojo-vistas.xml")?;
+    let mut ids = Vec::new();
+    let mut pkg = String::new();
+    for part in out.split("resource-id=\"").skip(1) {
+        let id = part.split('"').next().unwrap_or("");
+        if !id.is_empty() && !ids.iter().any(|x: &String| x == id) {
+            ids.push(id.to_string());
+        }
+    }
+    if let Some(p) = out.split("package=\"").nth(1) {
+        pkg = p.split('"').next().unwrap_or("").to_string();
+    }
+    Ok((pkg, ids))
 }

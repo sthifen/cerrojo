@@ -37,6 +37,12 @@ la Play Store, ni desde otra tienda, ni con un APK descargado. La llave se queda
 - 🌐 **También sus páginas web.** Al bloquear Instagram, TikTok, Facebook, Threads… sus sitios dejan de abrir en
   cualquier navegador del celular. WhatsApp, LinkedIn y YouTube web siguen funcionando. Se apaga y se enciende con
   su propio interruptor, *Páginas web*.
+- ✂️ **O solo sin su video vertical.** YouTube se puede dejar instalada y usable, pero **sin Shorts**: en cuanto
+  entras a un Short, el celular te saca. Cada app elige: *bloqueada*, *sin vertical* o *libre*.
+- ⏱️ **Abrir un rato.** «Abrir… 20 min» desde el PC: pasado el tiempo se vuelve a cerrar sola, aunque desconectes
+  el cable.
+- 🛡️ **Protección máxima (opcional).** El celular se cuida solo, sin el PC: no deja desinstalar los candados ni
+  Cerrojo, ni apagar la VPN, y si instalas una app bloqueada la suspende al instante.
 - ➕ **Cualquier otra app** se añade escribiendo su nombre de paquete.
 - 📱 **Varios equipos**: el celular, la tablet, el de tu hermano… cada uno recuerda su lista.
 - 🪶 **Nada que hacer en el celular.** Todo va por `adb`, la herramienta oficial de Android: sin cuentas, sin
@@ -129,6 +135,26 @@ VPN local que **solo ve el DNS**. Cuando el navegador pregunta por `instagram.co
 de preguntas las reenvía al DNS de tu red, y el tráfico normal no pasa por ella. adb le da el permiso de VPN
 (`appops`) sin el diálogo de confirmación y la deja como VPN siempre activa, así que vuelve sola al reiniciar.
 
+**Sin vertical** es un servicio de accesibilidad de esa misma mini app. Solo mira las apps que elegiste y,
+si en la pantalla aparece una vista que solo existe en su video vertical (en YouTube, `reel_watch_player`), pulsa
+*Atrás*. Si el video sigue ahí (entraste por un enlace), pulsa *Inicio*. Lo enciende adb (`settings put secure`) y
+la app tiene permiso para volver a encenderlo si lo apagas en Ajustes. Además queda como *administrador del
+dispositivo*, así que no se puede forzar su detención ni desinstalarla sin quitar eso primero. Qué vistas buscar en
+cada app viene del catálogo del PC: para añadir otra app, abre su video vertical y corre `cerrojo vistas`.
+
+**Protección máxima** hace a esa mini app *propietaria del equipo* (Device Owner), lo mismo que usan las empresas
+con los celulares de trabajo:
+
+- Bloquea la desinstalación de los candados y de sí misma, así que la Play Store ya no puede quitarlos.
+- Prohíbe tocar la VPN y el modo seguro.
+- Suspende al momento cualquier app bloqueada que aparezca.
+- Lleva el reloj de los desbloqueos temporales: usa el reloj interno, así que cambiar la hora no alarga nada, y
+  un reinicio los cierra.
+
+Android solo deja ponerla en un celular **sin cuentas**: hay que quitar las de Google y Samsung (y la Carpeta
+Segura), pulsar *Protección máxima* y volver a añadirlas. Se quita desde Cerrojo, o a mano con
+`adb shell dpm remove-active-admin dev.cerrojo.filtro/.Admin`. No bloquea el restablecimiento de fábrica.
+
 Los candados y el filtro se generan dentro de Cerrojo, sin necesitar el SDK de Android: el manifiesto, el zip y la firma
 APK v2 están hechos en Rust (`src/apk.rs`).
 
@@ -138,8 +164,14 @@ APK v2 están hechos en Rust (`src/apk.rs`).
 
 **¿Puedo saltármelo desde el celular?** Hay una sola forma: en la ficha de la app en la Play Store, tocar
 *Desinstalar* (quita el candado) y luego instalar la app real. Cuesta varios pasos conscientes, que es justo lo que
-corta el impulso, y **Cerrojo vuelve a poner el candado la próxima vez que conectes el celular al PC**. Si buscas
-algo imposible de saltar, ninguna app sin root lo es; Cerrojo busca que sea incómodo.
+corta el impulso, y **Cerrojo vuelve a poner el candado la próxima vez que conectes el celular al PC**. Con la
+*protección máxima* ese camino se cierra: la tienda no puede desinstalar el candado. Siempre queda el
+restablecimiento de fábrica; Cerrojo busca que saltárselo sea incómodo, no imposible.
+
+**¿El «sin vertical» funciona con Instagram, Facebook…?** Por ahora solo trae las vistas de YouTube. Para otra app:
+déjala instalada, abre su video vertical en el celular, corre `cerrojo vistas` y pon los nombres en
+`~/.config/cerrojo/vertical.json` (por ejemplo, `{"Instagram": ["clips_viewer_view_pager"]}`). Desde ese momento
+la app ofrece el modo. Si una actualización de la app cambia esas vistas, se arregla igual.
 
 **¿Y desde el navegador?** También: el filtro web bloquea los sitios de las apps que tengas bloqueadas (y los DNS
 cifrados que servirían para saltárselo). Se puede quitar desde *Ajustes › VPN* o desinstalándolo, pero Cerrojo lo
@@ -163,6 +195,12 @@ cerrojo bloquear com.zhiliaoapp.musically
 cerrojo desbloquear com.pinterest
 cerrojo web                         # pone o quita el filtro web según lo bloqueado
 cerrojo web apagar                  # lo desactiva en este equipo (encender lo vuelve a poner)
+cerrojo modo youtube vertical       # YouTube sí, Shorts no (bloqueada | vertical | libre)
+cerrojo abrir youtube 20            # 20 minutos y se vuelve a cerrar sola
+cerrojo cerrar                      # acaba ya los desbloqueos temporales
+cerrojo dueño                       # protección máxima (cerrojo dueño quitar la quita)
+cerrojo guardia                     # estado de lo anterior
+cerrojo vistas                      # vistas de la pantalla de ahora, para el «sin vertical»
 cerrojo bloquear PAQUETE -s SERIAL  # con varios equipos conectados
 ```
 

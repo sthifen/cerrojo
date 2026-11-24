@@ -54,8 +54,17 @@ Preinstalled apps such as YouTube can't be replaced, so they are suspended inste
 Cerrojo (manifest, zip and APK Signature Scheme v2 in Rust), so no Android SDK is required.
 
 The one way around it from the phone is to tap *Uninstall* on the app's Play Store page and then install the real
-app. That takes several deliberate steps, and Cerrojo restores the lock the next time you connect. For websites,
-pair it with a filtering DNS such as [NextDNS](https://nextdns.io).
+app. That takes several deliberate steps, and Cerrojo restores the lock the next time you connect. Websites are
+blocked by a small DNS-only local VPN that Cerrojo installs over adb.
+
+Each app can also be set to **no vertical video**: the app stays usable, but an accessibility service backs out
+as soon as its short-form player shows up. It ships with YouTube Shorts; for other apps, run `cerrojo vistas`
+on that screen and add the view ids to `~/.config/cerrojo/vertical.json`. **Open for a while** (`cerrojo abrir
+youtube 20`) relocks by itself even with the cable unplugged. **Maximum protection** makes the companion app the
+*device owner*. It then blocks uninstalling the placeholders and itself, as well as VPN changes and safe mode, and
+it suspends any blocked app the moment it is installed. Android only allows this on a phone with no accounts, so
+you remove them first and add them back afterwards. To remove it, use Cerrojo or `adb shell dpm
+remove-active-admin dev.cerrojo.filtro/.Admin`.
 
 ## Build
 

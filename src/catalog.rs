@@ -16,6 +16,11 @@ pub struct App {
     /// subdominios; con "!" delante, una excepción.
     #[serde(default)]
     pub domains: Vec<String>,
+    /// Vistas (resource-id) que solo aparecen en su video vertical: con la
+    /// app en "sin vertical", el celular te saca en cuanto se ve una. Se
+    /// sacan con `cerrojo vistas` en esa pantalla. Vacío: no hay ese modo.
+    #[serde(default)]
+    pub vertical: Vec<String>,
 }
 
 fn app(name: &str, hint: &str, packages: &[&str]) -> App {
@@ -24,6 +29,7 @@ fn app(name: &str, hint: &str, packages: &[&str]) -> App {
         hint: hint.into(),
         packages: packages.iter().map(|p| p.to_string()).collect(),
         domains: Vec::new(),
+        vertical: Vec::new(),
     }
 }
 
@@ -31,6 +37,16 @@ impl App {
     fn web(mut self, domains: &[&str]) -> App {
         self.domains = domains.iter().map(|d| d.to_string()).collect();
         self
+    }
+
+    fn vertical(mut self, ids: &[&str]) -> App {
+        self.vertical = ids.iter().map(|d| d.to_string()).collect();
+        self
+    }
+
+    /// Si se puede dejar la app quitándole solo el video vertical.
+    pub fn has_vertical(&self) -> bool {
+        !self.vertical.is_empty()
     }
 }
 
@@ -44,7 +60,8 @@ pub const BYPASS: &[&str] = &[
 
 pub fn builtin() -> Vec<App> {
     vec![
-        app("YouTube", "Shorts", &["com.google.android.youtube"]),
+        // Vistas sacadas del A36 con YouTube 21.45 (Shorts abierto).
+        app("YouTube", "Shorts", &["com.google.android.youtube"]).vertical(&["reel_watch_player", "reel_recycler"]),
         app("YouTube Music", "Samples", &["com.google.android.apps.youtube.music"]),
         app(
             "YouTube parcheado",
@@ -96,9 +113,21 @@ pub fn config_dir() -> PathBuf {
 }
 
 /// Las del catálogo más las que añadiste tú (~/.config/cerrojo/extra.json).
+/// En ~/.config/cerrojo/vertical.json ({"Instagram": ["clips_viewer_view_pager"]})
+/// se pueden poner o corregir las vistas de video vertical sin esperar a una
+/// versión nueva de Cerrojo.
 pub fn all() -> Vec<App> {
     let mut apps = builtin();
     apps.extend(load_extra());
+    let extra_vertical: std::collections::HashMap<String, Vec<String>> = std::fs::read(config_dir().join("vertical.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    for a in &mut apps {
+        if let Some(v) = extra_vertical.get(&a.name) {
+            a.vertical = v.clone();
+        }
+    }
     apps
 }
 

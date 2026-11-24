@@ -1,6 +1,6 @@
 [package]
 name = "cerrojo"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Bloquea en el celular las apps de reels y video vertical; solo el PC las desbloquea"
 license = "MIT"

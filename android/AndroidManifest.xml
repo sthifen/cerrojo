@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Filtro web de Cerrojo: una VPN local que solo ve el DNS. No tiene icono ni
-     pantalla; se maneja por adb (ver src/device.rs del PC). -->
+<!-- La parte de Cerrojo que vive en el celular: el filtro web (una VPN local
+     que solo ve el DNS), el servicio que te saca del video vertical y el
+     guardián (protección máxima). No tiene icono ni pantalla; se maneja por adb
+     (ver src/device.rs del PC). testOnly: así la protección máxima siempre se
+     puede quitar por adb (dpm remove-active-admin). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="dev.cerrojo.filtro">
 
@@ -8,8 +11,11 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
-    <application android:label="Cerrojo" android:allowBackup="false">
+    <application android:label="Cerrojo" android:allowBackup="false" android:testOnly="true">
 
         <!-- Solo la abre el shell de adb: DUMP no se le concede a ninguna app. -->
         <activity android:name=".Orden"
@@ -27,6 +33,27 @@
             </intent-filter>
             <meta-data android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON" android:value="true" />
         </service>
+
+        <service android:name=".Guardia" android:exported="false" />
+
+        <service android:name=".Vertical"
+            android:exported="true"
+            android:label="Cerrojo: sin video vertical"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/vertical" />
+        </service>
+
+        <receiver android:name=".Admin"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data android:name="android.app.device_admin" android:resource="@xml/admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
 
         <receiver android:name=".Arranque" android:exported="true">
             <intent-filter>

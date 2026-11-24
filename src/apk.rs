@@ -22,9 +22,11 @@ const TEMPLATE_PKG: &str = "com.cerrojo.plantilla";
 const FILTER_MANIFEST: &[u8] = include_bytes!("../assets/filtro/AndroidManifest.xml");
 const FILTER_ARSC: &[u8] = include_bytes!("../assets/filtro/resources.arsc");
 const FILTER_DEX: &[u8] = include_bytes!("../assets/filtro/classes.dex");
+const FILTER_XML_VERTICAL: &[u8] = include_bytes!("../assets/filtro/res/xml/vertical.xml");
+const FILTER_XML_ADMIN: &[u8] = include_bytes!("../assets/filtro/res/xml/admin.xml");
 pub const FILTER_PKG: &str = "dev.cerrojo.filtro";
 /// El versionCode de android/build.sh.
-pub const FILTER_VERSION: u32 = 1;
+pub const FILTER_VERSION: u32 = 2;
 
 /// Lo que lleva el versionName de nuestros candados (también los hechos a
 /// mano con ~/bloqueo-reels, que decían solo "bloqueado").
@@ -44,6 +46,8 @@ pub fn build_filter() -> Result<Vec<u8>> {
     sign_v2(zip(&[
         ("AndroidManifest.xml", FILTER_MANIFEST),
         ("classes.dex", FILTER_DEX),
+        ("res/xml/admin.xml", FILTER_XML_ADMIN),
+        ("res/xml/vertical.xml", FILTER_XML_VERTICAL),
         ("resources.arsc", FILTER_ARSC),
     ]))
 }
